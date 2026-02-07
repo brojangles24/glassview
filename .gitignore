@@ -1,1 +1,16 @@
+Node
 
+node_modules
+dist
+target
+
+Rust
+
+/src-tauri/target
+/src-tauri/Cargo.lock
+**/*.rs.bk
+
+OS
+
+.DS_Store
+Thumbs.db
