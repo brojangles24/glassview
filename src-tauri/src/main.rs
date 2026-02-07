@@ -1,23 +1,21 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use sysinfo::{CpuExt, NetworkExt, PidExt, ProcessExt, System, SystemExt, ComponentExt, UserExt};
+use sysinfo::{CpuExt, System, SystemExt, ProcessExt, PidExt, UserExt, NetworkExt, ComponentExt};
 use std::sync::Mutex;
 use std::process::Command;
-use tauri::State;
+use std::fs;
+use tauri::{State, SystemTray, SystemTrayMenu, SystemTrayEvent, CustomMenuItem, Manager};
+
+// --- Structs ---
 
 #[derive(serde::Serialize)]
 struct ProcInfo {
     id: u32,
     name: String,
     user: String,
-    path: String,
-    cmd: String,
     status: String,
     cpu: f32,
     mem: u64,
-    disk: f32,
-    net: f32,
-    is_privileged: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -27,7 +25,6 @@ struct SystemStats {
     mem_total: u64,
     net_in: u64,
     cpu_temp: f32,
-    gpu_temp: f32,
     uptime: u64,
     proc_count: usize,
 }
@@ -35,11 +32,8 @@ struct SystemStats {
 #[derive(serde::Serialize)]
 struct SecurityAudit {
     kernel_version: String,
-    os_name: String,
-    root_procs: usize,
-    listening_ports: usize,
-    selinux_status: String,
     secure_boot: bool,
+    root_procs: usize,
 }
 
 #[derive(serde::Serialize)]
@@ -50,58 +44,60 @@ struct ServiceStatus {
 }
 
 #[derive(serde::Serialize)]
-struct GpuStats {
-    util: f32,
-    temp: f32,
-}
-
-#[derive(serde::Serialize)]
 struct LogEntry {
     time: String,
     msg: String,
+}
+
+#[derive(serde::Serialize)]
+struct StartupApp {
+    name: String,
+    path: String,
+    enabled: bool,
+}
+
+#[derive(serde::Serialize)]
+struct HardwareInfo {
+    cpu_model: String,
+    cpu_cores: usize,
+    ram_total: String,
+    gpu_model: String,
+    os_distro: String,
 }
 
 struct AppState {
     sys: Mutex<System>,
 }
 
+// --- Commands ---
+
 #[tauri::command]
 fn get_processes(state: State<AppState>) -> Vec<ProcInfo> {
     let mut sys = state.sys.lock().unwrap();
     sys.refresh_processes();
     sys.refresh_cpu();
-    sys.refresh_users_list();
-
+    
     let mut procs: Vec<ProcInfo> = Vec::new();
     let users = sys.users();
 
     for (pid, process) in sys.processes() {
         let user_name = match process.user_id() {
-            Some(uid) => {
-                users.iter().find(|u| u.id() == uid)
-                    .map(|u| u.name().to_string())
-                    .unwrap_or_else(|| "unknown".to_string())
-            },
-            None => "system".to_string()
+             Some(uid) => users.iter().find(|u| u.id() == uid)
+                 .map(|u| u.name().to_string())
+                 .unwrap_or_else(|| "unknown".to_string()),
+             None => "system".to_string()
         };
-
-        let is_root = user_name == "root";
 
         procs.push(ProcInfo {
             id: pid.as_u32(),
             name: process.name().to_string(),
             user: user_name,
-            path: process.exe().to_string_lossy().to_string(),
-            cmd: process.cmd().join(" "),
             status: format!("{:?}", process.status()),
             cpu: process.cpu_usage(),
             mem: process.memory(),
-            disk: process.disk_usage().read_bytes as f32 / 1024.0,
-            net: 0.0,
-            is_privileged: is_root,
         });
     }
-    procs.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap());
+    procs.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap_or(std::cmp::Ordering::Equal));
     procs.into_iter().take(60).collect()
 }
 
@@ -121,7 +117,7 @@ fn get_system_stats(state: State<AppState>) -> SystemStats {
     let mut cpu_t = 0.0;
     for component in sys.components() {
         let label = component.label().to_lowercase();
-        if label.contains("k10temp") || label.contains("coretemp") || label.contains("package") || label.contains("cpu") {
+        if label.contains("cpu") || label.contains("core") || label.contains("package") {
             cpu_t = component.temperature();
             break;
         }
@@ -133,105 +129,108 @@ fn get_system_stats(state: State<AppState>) -> SystemStats {
         mem_total: sys.total_memory(),
         net_in: net_total,
         cpu_temp: cpu_t,
-        gpu_temp: 0.0, 
         uptime: sys.uptime(),
         proc_count: sys.processes().len(),
     }
 }
 
 #[tauri::command]
-fn get_security_audit(state: State<AppState>) -> SecurityAudit {
-    let sys = state.sys.lock().unwrap();
-    let root_count = sys.processes().values()
-        .filter(|p| {
-             match p.user_id() {
-                 Some(uid) => format!("{:?}", uid).contains("0"),
-                 None => false
-             }
-        })
-        .count();
+fn get_startup_apps() -> Vec<StartupApp> {
+    let mut apps = Vec::new();
+    let home = std::env::var("HOME").unwrap_or_default();
+    let path = format!("{}/.config/autostart", home);
 
-    SecurityAudit {
-        kernel_version: sys.kernel_version().unwrap_or("Unknown".into()),
-        os_name: sys.name().unwrap_or("Linux".into()),
-        root_procs: root_count,
-        listening_ports: 14, 
-        selinux_status: "Enforcing".to_string(), 
-        secure_boot: true, 
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            let fname = entry.file_name().to_string_lossy().to_string();
+            if fname.ends_with(".desktop") {
+                apps.push(StartupApp {
+                    name: fname.replace(".desktop", ""),
+                    path: entry.path().to_string_lossy().to_string(),
+                    enabled: true,
+                });
+            } else if fname.ends_with(".desktop.bak") {
+                apps.push(StartupApp {
+                    name: fname.replace(".desktop.bak", ""),
+                    path: entry.path().to_string_lossy().to_string(),
+                    enabled: false,
+                });
+            }
+        }
+    }
+    apps
+}
+
+#[tauri::command]
+fn toggle_startup(path: String, enable: bool) -> bool {
+    let new_path = if enable {
+        path.replace(".desktop.bak", ".desktop")
+    } else {
+        path.replace(".desktop", ".desktop.bak")
+    };
+    fs::rename(path, new_path).is_ok()
+}
+
+#[tauri::command]
+fn get_hardware_info(state: State<AppState>) -> HardwareInfo {
+    let sys = state.sys.lock().unwrap();
+    let gpu_out = Command::new("lspci").output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).lines()
+            .find(|l| l.contains("VGA") || l.contains("3D"))
+            .map(|l| l.split(": ").last().unwrap_or("Unknown GPU").to_string())
+            .unwrap_or("Integrated/Unknown".to_string()))
+        .unwrap_or("Unknown".to_string());
+
+    HardwareInfo {
+        cpu_model: sys.global_cpu_info().brand().to_string(),
+        cpu_cores: sys.cpus().len(),
+        ram_total: format!("{:.1} GB", sys.total_memory() as f64 / 1024.0 / 1024.0 / 1024.0),
+        gpu_model: gpu_out,
+        os_distro: sys.name().unwrap_or("Linux".into()),
     }
 }
 
 #[tauri::command]
-fn get_services() -> Vec<ServiceStatus> {
-    let services = vec!["sshd", "NetworkManager", "bluetooth", "ufw", "docker", "systemd-journald"];
-    let mut results = Vec::new();
+fn control_service(name: String, action: String) -> bool {
+    Command::new("systemctl").arg(&action).arg(&name).status().map(|s| s.success()).unwrap_or(false)
+}
 
+#[tauri::command]
+fn get_services() -> Vec<ServiceStatus> {
+    let services = vec!["sshd", "NetworkManager", "ufw", "docker", "bluetooth", "cronie"];
+    let mut results = Vec::new();
     for s in services {
-        let output = Command::new("systemctl")
-            .arg("is-active")
-            .arg(s)
-            .output();
-        
+        let output = Command::new("systemctl").arg("is-active").arg(s).output();
         let status = match output {
             Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
             Err(_) => "unknown".to_string(),
         };
-        
-        results.push(ServiceStatus { 
-            name: s.to_string(), 
-            active: status == "active",
-            status 
-        });
+        results.push(ServiceStatus { name: s.to_string(), active: status == "active", status });
     }
     results
 }
 
 #[tauri::command]
-fn get_gpu_stats() -> GpuStats {
-    // Requires nvidia-utils or similar
-    let output = Command::new("nvidia-smi")
-        .args(&["--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"])
-        .output();
+fn get_security_audit(state: State<AppState>) -> SecurityAudit {
+    let sys = state.sys.lock().unwrap();
+    let root_count = sys.processes().values()
+        .filter(|p| format!("{:?}", p.user_id()).contains("0"))
+        .count();
 
-    if let Ok(o) = output {
-        if o.status.success() {
-            let out_str = String::from_utf8_lossy(&o.stdout);
-            let parts: Vec<&str> = out_str.split(',').collect();
-            if parts.len() >= 2 {
-                return GpuStats {
-                    util: parts[0].trim().parse().unwrap_or(0.0),
-                    temp: parts[1].trim().parse().unwrap_or(0.0),
-                };
-            }
-        }
+    SecurityAudit {
+        kernel_version: sys.kernel_version().unwrap_or("Unknown".into()),
+        secure_boot: true,
+        root_procs: root_count,
     }
-    
-    GpuStats { util: 0.0, temp: 0.0 }
 }
 
 #[tauri::command]
 fn get_journal_logs() -> Vec<LogEntry> {
-    // Get last 5 errors/critical logs
-    let output = Command::new("journalctl")
-        .args(&["-p", "3", "-n", "5", "--output=short-iso", "--no-pager"])
-        .output();
-
+    let output = Command::new("journalctl").args(&["-p", "3", "-n", "10", "--output=short-iso", "--no-pager"]).output();
     let mut logs = Vec::new();
     if let Ok(o) = output {
-        let out_str = String::from_utf8_lossy(&o.stdout);
-        for line in out_str.lines() {
-            let parts: Vec<&str> = line.splitn(4, ' ').collect(); // simple split attempt
-            if parts.len() >= 4 {
-                // Formatting simplified: Time + Host + Process + Msg
-                // We just grab Time (part 0) and Msg (rest)
-                let time = parts[0].to_string();
-                let msg = parts[3..].join(" "); // simplistic reconstruction
-                
-                logs.push(LogEntry {
-                    time,
-                    msg: line.to_string(), // Send full line for now
-                });
-            }
+        for line in String::from_utf8_lossy(&o.stdout).lines() {
+            logs.push(LogEntry { time: "Recent".into(), msg: line.to_string() });
         }
     }
     logs
@@ -246,20 +245,68 @@ fn kill_process(pid: u32, state: State<AppState>) -> bool {
     false
 }
 
+// --- NEW PROCESS CONTROLS ---
+
+#[tauri::command]
+fn suspend_process(pid: u32) -> bool {
+    // SIGSTOP = 19
+    Command::new("kill").arg("-19").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn resume_process(pid: u32) -> bool {
+    // SIGCONT = 18
+    Command::new("kill").arg("-18").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_process_priority(pid: u32, priority: String) -> bool {
+    // renice -n <value> -p <pid>
+    // High = -10, Normal = 0, Low = 10
+    let val = match priority.as_str() {
+        "High" => "-10",
+        "Low" => "10",
+        _ => "0",
+    };
+    Command::new("renice").arg("-n").arg(val).arg("-p").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false)
+}
+
 fn main() {
     let mut sys = System::new_all();
     sys.refresh_all();
 
+    let quit = CustomMenuItem::new("quit".to_string(), "Quit");
+    let show = CustomMenuItem::new("show".to_string(), "Show Dashboard");
+    let tray_menu = SystemTrayMenu::new().add_item(show).add_item(quit);
+    let tray = SystemTray::new().with_menu(tray_menu);
+
     tauri::Builder::default()
         .manage(AppState { sys: Mutex::new(sys) })
+        .system_tray(tray)
+        .on_system_tray_event(|app, event| match event {
+            SystemTrayEvent::MenuItemClick { id, .. } => {
+                match id.as_str() {
+                    "quit" => { std::process::exit(0); }
+                    "show" => {
+                        let window = app.get_window("main").unwrap();
+                        window.show().unwrap();
+                        window.set_focus().unwrap();
+                    }
+                    _ => {}
+                }
+            }
+            SystemTrayEvent::LeftClick { .. } => {
+                let window = app.get_window("main").unwrap();
+                window.show().unwrap();
+                window.set_focus().unwrap();
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
-            get_processes, 
-            get_system_stats, 
-            get_security_audit, 
-            get_services,
-            get_gpu_stats,
-            get_journal_logs,
-            kill_process
+            get_processes, get_system_stats, get_security_audit,
+            get_journal_logs, get_services, control_service, 
+            get_startup_apps, toggle_startup, get_hardware_info, 
+            kill_process, suspend_process, resume_process, set_process_priority
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
