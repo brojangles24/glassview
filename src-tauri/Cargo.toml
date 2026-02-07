@@ -7,8 +7,7 @@ edition = "2021"
 tauri-build = { version = "1", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "shell-open" ] }
+tauri = { version = "1", features = [ "shell-open", "system-tray" ] }
 serde = { version = "1", features = [ "derive" ] }
 serde_json = "1"
-# Downgraded to 0.29 to match the Ext trait syntax in main.rs
 sysinfo = "0.29"
