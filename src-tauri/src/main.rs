@@ -2,6 +2,7 @@
 
 use sysinfo::{CpuExt, NetworkExt, PidExt, ProcessExt, System, SystemExt, ComponentExt, UserExt};
 use std::sync::Mutex;
+use std::process::Command;
 use tauri::State;
 
 #[derive(serde::Serialize)]
@@ -39,6 +40,25 @@ struct SecurityAudit {
     listening_ports: usize,
     selinux_status: String,
     secure_boot: bool,
+}
+
+#[derive(serde::Serialize)]
+struct ServiceStatus {
+    name: String,
+    status: String,
+    active: bool,
+}
+
+#[derive(serde::Serialize)]
+struct GpuStats {
+    util: f32,
+    temp: f32,
+}
+
+#[derive(serde::Serialize)]
+struct LogEntry {
+    time: String,
+    msg: String,
 }
 
 struct AppState {
@@ -81,7 +101,6 @@ fn get_processes(state: State<AppState>) -> Vec<ProcInfo> {
             is_privileged: is_root,
         });
     }
-    // Sort by CPU usage descending
     procs.sort_by(|a, b| b.cpu.partial_cmp(&a.cpu).unwrap());
     procs.into_iter().take(60).collect()
 }
@@ -102,7 +121,6 @@ fn get_system_stats(state: State<AppState>) -> SystemStats {
     let mut cpu_t = 0.0;
     for component in sys.components() {
         let label = component.label().to_lowercase();
-        // Broad check for common sensor names
         if label.contains("k10temp") || label.contains("coretemp") || label.contains("package") || label.contains("cpu") {
             cpu_t = component.temperature();
             break;
@@ -124,15 +142,10 @@ fn get_system_stats(state: State<AppState>) -> SystemStats {
 #[tauri::command]
 fn get_security_audit(state: State<AppState>) -> SecurityAudit {
     let sys = state.sys.lock().unwrap();
-    
-    // Attempt to count processes running as root (uid 0)
     let root_count = sys.processes().values()
         .filter(|p| {
              match p.user_id() {
-                 Some(uid) => {
-                     // In sysinfo 0.29, uid comparisons can vary, simplified string check
-                     format!("{:?}", uid).contains("0") 
-                 }
+                 Some(uid) => format!("{:?}", uid).contains("0"),
                  None => false
              }
         })
@@ -142,10 +155,86 @@ fn get_security_audit(state: State<AppState>) -> SecurityAudit {
         kernel_version: sys.kernel_version().unwrap_or("Unknown".into()),
         os_name: sys.name().unwrap_or("Linux".into()),
         root_procs: root_count,
-        listening_ports: 14, // Placeholder: requires root or separate crate to scan accurately
+        listening_ports: 14, 
         selinux_status: "Enforcing".to_string(), 
         secure_boot: true, 
     }
+}
+
+#[tauri::command]
+fn get_services() -> Vec<ServiceStatus> {
+    let services = vec!["sshd", "NetworkManager", "bluetooth", "ufw", "docker", "systemd-journald"];
+    let mut results = Vec::new();
+
+    for s in services {
+        let output = Command::new("systemctl")
+            .arg("is-active")
+            .arg(s)
+            .output();
+        
+        let status = match output {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            Err(_) => "unknown".to_string(),
+        };
+        
+        results.push(ServiceStatus { 
+            name: s.to_string(), 
+            active: status == "active",
+            status 
+        });
+    }
+    results
+}
+
+#[tauri::command]
+fn get_gpu_stats() -> GpuStats {
+    // Requires nvidia-utils or similar
+    let output = Command::new("nvidia-smi")
+        .args(&["--query-gpu=utilization.gpu,temperature.gpu", "--format=csv,noheader,nounits"])
+        .output();
+
+    if let Ok(o) = output {
+        if o.status.success() {
+            let out_str = String::from_utf8_lossy(&o.stdout);
+            let parts: Vec<&str> = out_str.split(',').collect();
+            if parts.len() >= 2 {
+                return GpuStats {
+                    util: parts[0].trim().parse().unwrap_or(0.0),
+                    temp: parts[1].trim().parse().unwrap_or(0.0),
+                };
+            }
+        }
+    }
+    
+    GpuStats { util: 0.0, temp: 0.0 }
+}
+
+#[tauri::command]
+fn get_journal_logs() -> Vec<LogEntry> {
+    // Get last 5 errors/critical logs
+    let output = Command::new("journalctl")
+        .args(&["-p", "3", "-n", "5", "--output=short-iso", "--no-pager"])
+        .output();
+
+    let mut logs = Vec::new();
+    if let Ok(o) = output {
+        let out_str = String::from_utf8_lossy(&o.stdout);
+        for line in out_str.lines() {
+            let parts: Vec<&str> = line.splitn(4, ' ').collect(); // simple split attempt
+            if parts.len() >= 4 {
+                // Formatting simplified: Time + Host + Process + Msg
+                // We just grab Time (part 0) and Msg (rest)
+                let time = parts[0].to_string();
+                let msg = parts[3..].join(" "); // simplistic reconstruction
+                
+                logs.push(LogEntry {
+                    time,
+                    msg: line.to_string(), // Send full line for now
+                });
+            }
+        }
+    }
+    logs
 }
 
 #[tauri::command]
@@ -167,6 +256,9 @@ fn main() {
             get_processes, 
             get_system_stats, 
             get_security_audit, 
+            get_services,
+            get_gpu_stats,
+            get_journal_logs,
             kill_process
         ])
         .run(tauri::generate_context!())
