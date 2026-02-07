@@ -1,1 +1,391 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GlassView Monitor</title>
+    <style>
+        :root {
+            /* Portmaster Dark Theme */
+            --bg-app: #121212;
+            --bg-panel: #1e1e1e;
+            --bg-hover: #2a2a2a;
+            --bg-select: #333333;
+            --border: #333333;
+            --accent: #4a72ff; 
+            --accent-dim: rgba(74, 114, 255, 0.1);
+            --text-main: #f0f0f0;
+            --text-muted: #888888;
+            --danger: #ff4747;
+            --success: #00cc66;
+            --font-stack: 'Segoe UI Variable', 'Segoe UI', sans-serif;
+        }
 
+        * { box-sizing: border-box; user-select: none; cursor: default; }
+
+        body {
+            margin: 0;
+            font-family: var(--font-stack);
+            background-color: var(--bg-app);
+            color: var(--text-main);
+            height: 100vh;
+            display: grid;
+            grid-template-columns: 60px 1fr;
+            overflow: hidden;
+        }
+
+        /* --- Sidebar --- */
+        .sidebar {
+            background: var(--bg-panel);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding-top: 12px;
+            gap: 8px;
+            z-index: 100;
+        }
+
+        .nav-item {
+            width: 40px;
+            height: 40px;
+            border-radius: 6px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+            transition: all 0.1s;
+            color: var(--text-muted);
+            position: relative;
+        }
+
+        .nav-item:hover { background: var(--bg-hover); color: var(--text-main); }
+        .nav-item.active { background: var(--bg-hover); color: var(--accent); }
+        .nav-item.active::before {
+            content: ''; position: absolute; left: -8px; 
+            height: 16px; width: 3px; background: var(--accent); border-radius: 0 4px 4px 0;
+        }
+        .nav-icon { font-size: 1.2rem; }
+
+        /* --- Content --- */
+        .main-content { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+        .header {
+            height: 50px; padding: 0 20px; display: flex; align-items: center;
+            justify-content: space-between; background: var(--bg-app); border-bottom: 1px solid var(--border);
+        }
+        .page-title { font-size: 1.1rem; font-weight: 600; }
+
+        .btn {
+            background: var(--bg-panel); border: 1px solid var(--border);
+            color: var(--text-main); padding: 5px 12px; border-radius: 4px; font-size: 0.8rem;
+            cursor: pointer; transition: 0.2s;
+        }
+        .btn:hover { background: var(--bg-hover); border-color: #555; }
+        .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+        .btn-primary:hover { background: #3a62ee; }
+        .btn-danger { color: var(--danger); border-color: var(--danger); }
+        .btn-danger:hover { background: rgba(255, 71, 71, 0.1); }
+
+        /* Views */
+        .view-section { display: none; flex: 1; overflow: hidden; padding: 0; }
+        .view-section.active { display: flex; flex-direction: column; }
+
+        /* Tables */
+        .data-grid { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+        .grid-header { background: var(--bg-app); position: sticky; top: 0; z-index: 10; }
+        .grid-header th {
+            text-align: left; padding: 10px 12px; font-weight: 400; color: var(--text-muted);
+            border-bottom: 1px solid var(--border); font-size: 0.75rem;
+        }
+        .grid-body td {
+            padding: 8px 12px; border-bottom: 1px solid #1a1a1a;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .grid-row:hover { background: var(--bg-hover); }
+        .grid-row.selected { background: var(--bg-select); color: #fff; }
+
+        /* Performance Tab */
+        .perf-container { display: grid; grid-template-columns: 260px 1fr; height: 100%; }
+        .perf-sidebar { border-right: 1px solid var(--border); overflow-y: auto; background: var(--bg-app); }
+        .perf-item { padding: 15px 20px; border-bottom: 1px solid var(--border); cursor: pointer; border-left: 3px solid transparent; }
+        .perf-item.active { background: var(--bg-panel); border-left-color: var(--accent); }
+        .perf-val { font-size: 1.4rem; font-weight: 600; }
+        .perf-chart-area { padding: 20px; background: var(--bg-panel); display: flex; flex-direction: column; }
+        .graph-box { flex: 1; border: 1px solid var(--border); background: #141414; border-radius: 4px; overflow: hidden; display: flex; align-items: flex-end; }
+        
+        svg path { fill: none; stroke: var(--accent); stroke-width: 2; vector-effect: non-scaling-stroke; }
+        .area-path { fill: var(--accent-dim); stroke: none; }
+
+        /* Hardware Tab */
+        .hw-grid { padding: 20px; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; }
+        .hw-card { background: var(--bg-panel); padding: 15px; border: 1px solid var(--border); border-radius: 6px; }
+        .hw-label { font-size: 0.8rem; color: var(--text-muted); margin-bottom: 5px; }
+        .hw-val { font-size: 1.1rem; font-weight: 600; color: var(--accent); }
+
+        /* Utils */
+        .badge { padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: 600; }
+        .badge-safe { background: rgba(0, 204, 102, 0.15); color: var(--success); }
+        .badge-warn { background: rgba(255, 71, 71, 0.15); color: var(--danger); }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-app); }
+        ::-webkit-scrollbar-thumb { background: #333; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div class="sidebar">
+        <div class="nav-item active" onclick="switchTab('processes')" title="Processes"><span class="nav-icon">≡</span></div>
+        <div class="nav-item" onclick="switchTab('performance')" title="Performance"><span class="nav-icon">∿</span></div>
+        <div class="nav-item" onclick="switchTab('network')" title="Active Connections"><span class="nav-icon">⚡</span></div>
+        <div class="nav-item" onclick="switchTab('startup')" title="Startup Apps"><span class="nav-icon">🚀</span></div>
+        <div class="nav-item" onclick="switchTab('hardware')" title="Hardware Specs"><span class="nav-icon">💻</span></div>
+        <div class="nav-item" onclick="switchTab('security')" title="Security"><span class="nav-icon">🛡</span></div>
+    </div>
+
+    <div class="main-content">
+        <div class="header">
+            <div class="page-title" id="page-title">Processes</div>
+            <div class="action-bar" id="action-bar">
+                <button class="btn btn-primary" id="btn-kill" style="display:none" onclick="killSelected()">End Task</button>
+            </div>
+        </div>
+
+        <!-- Processes -->
+        <div id="tab-processes" class="view-section active">
+            <div style="flex: 1; overflow-y: auto;">
+                <table class="data-grid">
+                    <thead class="grid-header">
+                        <tr><th>Name</th><th>PID</th><th>Status</th><th>CPU</th><th>Memory</th></tr>
+                    </thead>
+                    <tbody class="grid-body" id="proc-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Performance -->
+        <div id="tab-performance" class="view-section">
+            <div class="perf-container">
+                <div class="perf-sidebar">
+                    <div class="perf-item active"><div class="perf-val" id="perf-cpu">0%</div><div>CPU</div></div>
+                    <div class="perf-item"><div class="perf-val" id="perf-mem">0 GB</div><div>Memory</div></div>
+                    <div class="perf-item"><div class="perf-val" id="perf-gpu">0%</div><div>GPU</div></div>
+                </div>
+                <div class="perf-chart-area">
+                    <div class="graph-box"><svg viewBox="0 0 100 100"><path class="area-path"/><path class="line-path"/></svg></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Network -->
+        <div id="tab-network" class="view-section">
+            <div style="flex: 1; overflow-y: auto;">
+                <table class="data-grid">
+                    <thead class="grid-header">
+                        <tr><th>Process</th><th>Protocol</th><th>Local Address</th><th>Remote Address</th><th>State</th></tr>
+                    </thead>
+                    <tbody class="grid-body" id="net-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Startup -->
+        <div id="tab-startup" class="view-section">
+            <div style="flex: 1; overflow-y: auto;">
+                <table class="data-grid">
+                    <thead class="grid-header"><tr><th>Name</th><th>Path</th><th>Status</th><th>Action</th></tr></thead>
+                    <tbody class="grid-body" id="startup-body"></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Hardware -->
+        <div id="tab-hardware" class="view-section">
+            <div class="hw-grid" id="hw-grid">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+
+        <!-- Security -->
+        <div id="tab-security" class="view-section">
+            <div style="padding: 20px; overflow-y: auto;">
+                <h3 style="margin-top:0">System Integrity</h3>
+                <div class="hw-grid" id="audit-grid" style="padding:0; margin-bottom: 20px;"></div>
+
+                <h3>Services</h3>
+                <div id="service-list" style="margin-bottom: 20px"></div>
+                
+                <h3>Journal (Critical)</h3>
+                <div id="journal-list" style="font-family: monospace; font-size: 0.8rem; color: #aaa;"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const isTauri = window.__TAURI__ !== undefined;
+        const invoke = isTauri ? window.__TAURI__.invoke : null;
+        let selectedPid = null;
+        let graphData = Array(20).fill(50);
+        let activeTab = 'processes';
+
+        function switchTab(tab) {
+            activeTab = tab;
+            document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+            
+            const titles = {
+                'processes': 'Processes', 'performance': 'Performance', 
+                'network': 'Active Connections', 'startup': 'Startup Apps',
+                'hardware': 'System Hardware', 'security': 'Security Intelligence'
+            };
+            document.getElementById('page-title').innerText = titles[tab];
+            document.getElementById('btn-kill').style.display = tab === 'processes' ? 'block' : 'none';
+            updateData();
+        }
+
+        async function updateData() {
+            if (!isTauri) return;
+
+            try {
+                if(activeTab === 'processes' || activeTab === 'performance') {
+                    const stats = await invoke('get_system_stats');
+                    updatePerf(stats);
+                    const procs = await invoke('get_processes');
+                    renderProcs(procs);
+                }
+
+                if(activeTab === 'performance') {
+                    const gpu = await invoke('get_gpu_stats');
+                    document.getElementById('perf-gpu').innerText = gpu.util.toFixed(0) + '%';
+                }
+
+                if(activeTab === 'network') {
+                    const conns = await invoke('get_connections');
+                    renderNet(conns);
+                }
+
+                if(activeTab === 'startup') {
+                    const apps = await invoke('get_startup_apps');
+                    renderStartup(apps);
+                }
+
+                if(activeTab === 'hardware') {
+                    const hw = await invoke('get_hardware_info');
+                    renderHardware(hw);
+                }
+
+                if(activeTab === 'security') {
+                    const audit = await invoke('get_security_audit');
+                    const svcs = await invoke('get_services');
+                    const logs = await invoke('get_journal_logs');
+                    renderSecurity(svcs, logs, audit);
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        function updatePerf(stats) {
+            document.getElementById('perf-cpu').innerText = stats.cpu_util.toFixed(0) + '%';
+            document.getElementById('perf-mem').innerText = (stats.mem_used / 1024/1024/1024).toFixed(1) + ' GB';
+            
+            graphData.push(100 - stats.cpu_util);
+            graphData.shift();
+            let d = `M0,${graphData[0]} `;
+            for(let i=1; i<graphData.length; i++) d += `L${i * (100/(graphData.length-1))},${graphData[i]} `;
+            const svg = document.querySelector('svg');
+            svg.querySelector('.line-path').setAttribute('d', d);
+            svg.querySelector('.area-path').setAttribute('d', d + `L100,100 L0,100 Z`);
+        }
+
+        function renderProcs(list) {
+            document.getElementById('proc-body').innerHTML = list.map(p => `
+                <tr class="grid-row ${selectedPid === p.id ? 'selected' : ''}" onclick="selectPid(${p.id}, this)">
+                    <td style="font-weight:600">${p.name}</td><td>${p.id}</td><td>${p.status}</td>
+                    <td>${p.cpu.toFixed(1)}%</td><td>${(p.mem/1024/1024).toFixed(0)} MB</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderNet(list) {
+            document.getElementById('net-body').innerHTML = list.map(c => `
+                <tr class="grid-row">
+                    <td style="color:var(--accent)">${c.process}</td><td>${c.protocol}</td>
+                    <td>${c.local}</td><td>${c.remote}</td><td>${c.state}</td>
+                </tr>
+            `).join('');
+        }
+
+        function renderStartup(list) {
+            document.getElementById('startup-body').innerHTML = list.map(a => `
+                <tr class="grid-row">
+                    <td style="font-weight:600">${a.name}</td>
+                    <td style="color:var(--text-muted);font-size:0.75rem">${a.path}</td>
+                    <td><span class="badge ${a.enabled ? 'badge-safe' : 'badge-warn'}">${a.enabled ? 'Enabled' : 'Disabled'}</span></td>
+                    <td><button class="btn" onclick="toggleStartup('${a.path}', ${!a.enabled})">${a.enabled ? 'Disable' : 'Enable'}</button></td>
+                </tr>
+            `).join('');
+        }
+
+        function renderHardware(hw) {
+            document.getElementById('hw-grid').innerHTML = `
+                <div class="hw-card"><div class="hw-label">Processor</div><div class="hw-val">${hw.cpu_model}</div></div>
+                <div class="hw-card"><div class="hw-label">Memory</div><div class="hw-val">${hw.ram_total}</div></div>
+                <div class="hw-card"><div class="hw-label">Graphics</div><div class="hw-val">${hw.gpu_model}</div></div>
+                <div class="hw-card"><div class="hw-label">OS Distro</div><div class="hw-val">${hw.os_distro}</div></div>
+                <div class="hw-card"><div class="hw-label">Cores</div><div class="hw-val">${hw.cpu_cores}</div></div>
+            `;
+        }
+
+        function renderSecurity(svcs, logs, audit) {
+            document.getElementById('audit-grid').innerHTML = `
+                <div class="hw-card"><div class="hw-label">Kernel</div><div class="hw-val">${audit.kernel_version}</div></div>
+                <div class="hw-card"><div class="hw-label">Secure Boot</div><div class="hw-val" style="color:${audit.secure_boot ? 'var(--success)' : 'var(--danger)'}">${audit.secure_boot ? 'Enabled' : 'Disabled'}</div></div>
+                <div class="hw-card"><div class="hw-label">Root Processes</div><div class="hw-val" style="color:${audit.root_procs > 0 ? 'var(--danger)' : 'var(--text-main)'}">${audit.root_procs}</div></div>
+            `;
+
+            document.getElementById('service-list').innerHTML = svcs.map(s => `
+                <div style="display:flex; justify-content:space-between; padding:8px; border-bottom:1px solid #333">
+                    <div>
+                        <div style="font-weight:600">${s.name}</div>
+                        <div style="font-size:0.75rem; color:${s.active?'var(--success)':'#666'}">${s.status}</div>
+                    </div>
+                    <div>
+                        <button class="btn" onclick="controlSvc('${s.name}', 'restart')">Restart</button>
+                        <button class="btn btn-danger" onclick="controlSvc('${s.name}', 'stop')">Stop</button>
+                    </div>
+                </div>
+            `).join('');
+            document.getElementById('journal-list').innerHTML = logs.map(l => `
+                <div style="margin-bottom:4px; padding-bottom:4px; border-bottom:1px solid #222">${l.msg}</div>
+            `).join('');
+        }
+
+        // --- Actions ---
+        function selectPid(pid, row) {
+            document.querySelectorAll('.grid-row').forEach(r => r.classList.remove('selected'));
+            row.classList.add('selected');
+            selectedPid = pid;
+        }
+
+        async function killSelected() {
+            if(selectedPid && isTauri) await invoke('kill_process', { pid: selectedPid });
+            updateData();
+        }
+
+        async function toggleStartup(path, enable) {
+            if(isTauri) await invoke('toggle_startup', { path, enable });
+            updateData();
+        }
+
+        async function controlSvc(name, action) {
+            if(isTauri) await invoke('control_service', { name, action });
+            updateData();
+        }
+
+        setInterval(updateData, 2000);
+        updateData();
+    </script>
+</body>
+</html>
