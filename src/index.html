@@ -127,11 +127,36 @@
         .badge-warn { background: rgba(251, 191, 36, 0.1); color: var(--neon-gold); }
         .badge-err { background: rgba(248, 113, 113, 0.1); color: var(--neon-red); }
 
+        /* --- Context Menu --- */
+        #contextMenu {
+            position: fixed; background: #1a1a1d; border: 1px solid var(--glass-border);
+            border-radius: 6px; padding: 5px; z-index: 2000; display: none; box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+            min-width: 160px;
+        }
+        .ctx-item {
+            padding: 8px 12px; cursor: pointer; font-size: 13px; color: #ccc; border-radius: 4px;
+        }
+        .ctx-item:hover { background: rgba(255,255,255,0.1); color: white; }
+        .ctx-danger { color: var(--neon-red); }
+        .ctx-sub-header { padding: 4px 12px; font-size: 10px; color: #666; text-transform: uppercase; font-weight:bold; margin-top:5px; }
+
     </style>
 </head>
 <body>
 
-    <div class="app-window">
+    <!-- Hidden Context Menu -->
+    <div id="contextMenu">
+        <div class="ctx-item" id="ctxSuspend">Suspend Process</div>
+        <div class="ctx-item" id="ctxResume">Resume Process</div>
+        <div class="ctx-sub-header">Priority</div>
+        <div class="ctx-item" onclick="setPriority('High')">High</div>
+        <div class="ctx-item" onclick="setPriority('Normal')">Normal</div>
+        <div class="ctx-item" onclick="setPriority('Low')">Low</div>
+        <div style="height:1px; background:var(--glass-border); margin:5px 0"></div>
+        <div class="ctx-item ctx-danger" id="ctxKill">End Task</div>
+    </div>
+
+    <div class="app-window" onclick="hideContext()">
         <!-- Sidebar -->
         <div class="sidebar">
             <div class="brand-icon"></div>
@@ -256,9 +281,12 @@
         const canvas = document.getElementById('cpuCanvas');
         const ctx = canvas.getContext('2d');
         let cpuHistory = new Array(60).fill(0);
+        let ctxPid = 0; // Target PID for context menu
+        let isPaused = false;
 
         // --- MAIN LOOP ---
         async function updateData() {
+            if (isPaused) return;
             if (!isTauri) return;
 
             try {
@@ -300,21 +328,21 @@
             const h = Math.floor(stats.uptime / 3600);
             const m = Math.floor((stats.uptime % 3600) / 60);
             document.getElementById('uptime-val').innerText = `${h}h ${m}m`;
-            document.getElementById('proc-count').innerText = stats.proc_count || 0; // Requires backend update to pass count if missing
+            document.getElementById('proc-count').innerText = stats.proc_count || 0; 
         }
 
         // --- RENDERERS ---
         function renderProcs(list) {
             const tbody = document.getElementById('proc-body');
             tbody.innerHTML = list.map(p => `
-                <tr>
+                <tr oncontextmenu="showContext(event, ${p.id})">
                     <td class="pid-cell">${p.id}</td>
                     <td style="font-weight:600; color:#fff">${p.name}</td>
                     <td style="color:${p.user==='root'?'var(--neon-red)':'#888'}">${p.user}</td>
                     <td>${p.status}</td>
                     <td class="val-cell">${p.cpu.toFixed(1)}%</td>
                     <td class="val-cell">${(p.mem/1024/1024).toFixed(0)} MB</td>
-                    <td><button class="action-btn btn-kill" onclick="killProc(${p.id})">KILL</button></td>
+                    <td><button class="action-btn" onclick="showContext(event, ${p.id})">⋮</button></td>
                 </tr>
             `).join('');
         }
@@ -382,6 +410,41 @@
             `).join('');
         }
 
+        // --- CONTEXT MENU LOGIC ---
+        function showContext(e, pid) {
+            e.preventDefault();
+            e.stopPropagation();
+            isPaused = true;
+            ctxPid = pid;
+            const menu = document.getElementById('contextMenu');
+            menu.style.display = 'block';
+            menu.style.left = `${e.clientX - 100}px`;
+            menu.style.top = `${e.clientY + 5}px`;
+
+            // Bind Actions
+            document.getElementById('ctxSuspend').onclick = () => { suspendProc(pid); hideContext(); };
+            document.getElementById('ctxResume').onclick = () => { resumeProc(pid); hideContext(); };
+            document.getElementById('ctxKill').onclick = () => { killProc(pid); hideContext(); };
+        }
+
+        function hideContext() {
+            document.getElementById('contextMenu').style.display = 'none';
+            setTimeout(() => isPaused = false, 500);
+        }
+
+        async function suspendProc(pid) {
+            if(isTauri) await invoke('suspend_process', { pid });
+        }
+
+        async function resumeProc(pid) {
+            if(isTauri) await invoke('resume_process', { pid });
+        }
+
+        async function setPriority(level) {
+            if(isTauri) await invoke('set_process_priority', { pid: ctxPid, priority: level });
+            hideContext();
+        }
+
         // --- ACTIONS ---
         async function killProc(pid) {
             if(confirm('Kill process ' + pid + '?') && isTauri) await invoke('kill_process', {pid});
@@ -416,7 +479,6 @@
 
         function drawGraph() {
             if(!canvas.offsetParent) return;
-            // Resize if needed
             if(canvas.width !== canvas.parentElement.offsetWidth) {
                 canvas.width = canvas.parentElement.offsetWidth;
                 canvas.height = canvas.parentElement.offsetHeight;
